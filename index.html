@@ -1,15 +1,22 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>Upload Video for Transcription</title>
+    <title>VoicePress Uploader</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+
   </head>
   <body>
-    <h2>Upload Your MP4 File</h2>
+    <h2>🎙️ VoicePress Upload</h2>
+
+    <p id="statusLight">⏳ Checking system status...</p>
+
     <form id="uploadForm">
       <input type="file" id="videoFile" accept="video/mp4" required />
       <button type="submit">Upload</button>
     </form>
-    <p id="status"></p>
+
+    <p id="uploadStatus"></p>
 
     <script src="upload.js"></script>
   </body>
