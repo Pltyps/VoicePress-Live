@@ -1,3 +1,3 @@
-# Video Transcriber Web Interface
+# VoicePress-Live
 
-This is a simple frontend hosted on GitHub Pages for uploading MP4 files to be transcribed.
+Web interface for automated video transcription and AI-generated social media content, built for the BYU Marriott School of Business. Developed by the AI Automation Team led by Professor Laura Cutler, with contributions from Navin Manirajan, Zhang Shulin, and Dr. Tom Meservy.
