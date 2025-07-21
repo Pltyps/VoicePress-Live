@@ -1,3 +1,5 @@
+const BACKEND_URL = "https://voicepress-live-api.onrender.com";
+
 document
   .getElementById("uploadForm")
   .addEventListener("submit", async function (e) {
@@ -12,15 +14,14 @@ document
     formData.append("file", file);
 
     try {
-      const response = await fetch("https://YOUR-BACKEND-URL/upload", {
+      const response = await fetch(`${BACKEND_URL}/upload-api`, {
         method: "POST",
         body: formData,
       });
 
-      const result = await response.json();
       status.textContent = response.ok
-        ? "✅ " + result.message
-        : "❌ " + result.message;
+        ? "✅ Upload complete!"
+        : "❌ Upload failed.";
 
       Toastify({
         text: response.ok ? "✅ Upload complete!" : "❌ Upload failed.",
@@ -45,7 +46,7 @@ document
 // Poll server status every 5s
 async function pollStatus() {
   try {
-    const res = await fetch("https://YOUR-BACKEND-URL/status");
+    const res = await fetch(`${BACKEND_URL}/status`);
     const data = await res.json();
     const light = document.getElementById("statusLight");
 
