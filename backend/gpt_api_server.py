@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 import openai
 import whisper
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # --- Load environment variables ---
 base_path = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 dotenv_path = base_path / ".env"
@@ -25,6 +27,16 @@ print("👋 GPT API starting...")
 app = FastAPI()
 
 job_running = False 
+
+# CORS Middleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://pltyps.github.io"],  # ✅ Your GitHub Pages domain
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- Routes ---
 
