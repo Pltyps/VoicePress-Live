@@ -1,4 +1,4 @@
-﻿aiohappyeyeballs==2.6.1
+aiohappyeyeballs==2.6.1
 aiohttp==3.12.14
 aiosignal==1.4.0
 annotated-types==0.7.0
@@ -37,8 +37,7 @@ typing-inspection==0.4.1
 typing_extensions==4.14.1
 urllib3==2.5.0
 uvicorn==0.29.0
-whisper==1.1.10
 yarl==1.20.1
+
+# ✅ Correct Whisper from GitHub
 git+https://github.com/openai/whisper.git
-
-
