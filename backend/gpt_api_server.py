@@ -5,12 +5,15 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse
 from fastapi.responses import HTMLResponse
+
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import whisper
 
 import openai
-import whisper
+
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -32,7 +35,9 @@ job_running = False
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://pltyps.github.io"],  # ✅ Your GitHub Pages domain
+    allow_origins=["https://pltyps.github.io"],  # The GitHub Pages domain
+    # # Temporarily change for test locally
+    # allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -68,11 +73,122 @@ def upload_form():
     </html>
     """
 
+# Old version
+# @app.post("/upload", response_class=HTMLResponse)
+# async def upload_mp4(file: UploadFile = File(...)):
+#     if not file.filename.lower().endswith(".mp4"):
+#         return HTMLResponse("<h3>Error: Only .mp4 files are supported.</h3>", status_code=400)
 
-@app.post("/upload", response_class=HTMLResponse)
+#     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+#         temp_video.write(await file.read())
+#         temp_video_path = temp_video.name
+
+#     try:
+#         model = whisper.load_model("base")
+#         result = model.transcribe(temp_video_path)
+#         transcript = result["text"]
+#         analysis = await analyze_with_transcript(transcript)
+
+#         # HTML
+#         quotes_html = "".join(f"<li>{q}</li>" for q in analysis["quotes"])
+#         linkedin_html = "".join(f"<div class='card'><h4>LinkedIn Post</h4><p>{p}</p></div>" for p in analysis["social_posts"]["linkedin"])
+#         instagram_html = "".join(f"<div class='card'><h4>Instagram Caption</h4><p>{p}</p></div>" for p in analysis["social_posts"]["instagram"])
+#         transcript_html = f"<div class='card'><h4>Full Transcript</h4><p>{transcript}</p></div>"
+
+#         def escape_attr(text):
+#             return text.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+#         # Plain text (not JSON-encoded!)
+#         quotes_txt = escape_attr("\n\n".join(analysis["quotes"]))
+#         linkedin_txt = escape_attr("\n\n".join(analysis["social_posts"]["linkedin"]))
+#         instagram_txt = escape_attr("\n\n".join(analysis["social_posts"]["instagram"]))
+#         summary_txt = escape_attr(analysis["summary"])
+
+
+
+#         html = f"""
+#         <html>
+#         <head>
+#             <title>Interview Analysis</title>
+#             <style>
+#                 body {{
+#                     font-family: Arial, sans-serif;
+#                     margin: 2em;
+#                     line-height: 1.6;
+#                 }}
+#                 h2 {{ color: #2c3e50; }}
+#                 .card {{
+#                     border: 1px solid #ddd;
+#                     border-radius: 8px;
+#                     padding: 1em;
+#                     margin: 1em 0;
+#                     background: #f9f9f9;
+#                 }}
+#                 ul {{ padding-left: 1.5em; }}
+#             </style>
+#         </head>
+#         <body>
+#             <button onclick="document.getElementById('videoFile').click()">⬆️ Upload Another File</button>
+
+#             <h1>🧠 GPT Interview Summary</h1>
+
+#             <h2>📌 Compelling Quotes</h2>
+#             <button onclick="copyToClipboard(this)" data-copy-target="summary-text">📋 Copy Summary</button><pre id="summary-text">{analysis["summary"]}</pre>
+
+#             <ul>{quotes_html}</ul>
+
+#             <h2>📄 Summary</h2>
+#             <button onclick="copyToClipboard(this)" data-copy-target="summary-text">📋 Copy Summary</button><pre id="summary-text">{analysis["summary"]}</pre>
+#             <pre>{analysis["summary"]}</pre>
+
+#             <h2>💼 LinkedIn Posts</h2>
+#             <button onclick="copyToClipboard(this)" data-copy-target="summary-text">📋 Copy Summary</button><pre id="summary-text">{analysis["summary"]}</pre>
+#             {linkedin_html}
+
+#             <h2>📸 Instagram Captions</h2>
+#             <button onclick="copyToClipboard(this)" data-copy-target="summary-text">📋 Copy Summary</button><pre id="summary-text">{analysis["summary"]}</pre>
+
+#             {instagram_html}
+
+#             <h2>📝 Full Transcript</h2>
+#             {transcript_html}
+
+
+#             <hr>
+#             <p><a href="/upload-form">⬅️ Upload another file</a></p>
+
+#             <script>
+#                 function copyToClipboard(button) {{
+#                     const targetId = button.getAttribute("data-copy-target");  // type: ignore
+#                     const text = document.getElementById(targetId).innerText;
+#                     navigator.clipboard.writeText(text).then(() => {{
+#                         const originalText = button.innerHTML;
+#                         button.innerHTML = "✅ Copied!";
+#                         setTimeout(() => button.innerHTML = originalText, 1500);
+#                     }}).catch(err => {{
+#                         console.error("Failed to copy text:", err);
+#                         button.innerHTML = "❌ Error";
+#                     }});
+#                 }}
+#             </script>
+
+
+
+#         </body>
+#         </html>
+#         """
+
+#         return HTMLResponse(content=html)
+
+#     except Exception as e:
+#         return HTMLResponse(f"<h3>Error: {str(e)}</h3>", status_code=500)
+
+#     finally:
+#         os.remove(temp_video_path)
+@app.post("/upload")
 async def upload_mp4(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".mp4"):
-        return HTMLResponse("<h3>Error: Only .mp4 files are supported.</h3>", status_code=400)
+        return JSONResponse({"error": "Only .mp4 files are supported."}, status_code=400)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
         temp_video.write(await file.read())
@@ -84,91 +200,18 @@ async def upload_mp4(file: UploadFile = File(...)):
         transcript = result["text"]
         analysis = await analyze_with_transcript(transcript)
 
-        # HTML
-        quotes_html = "".join(f"<li>{q}</li>" for q in analysis["quotes"])
-        linkedin_html = "".join(f"<div class='card'><h4>LinkedIn Post</h4><p>{p}</p></div>" for p in analysis["social_posts"]["linkedin"])
-        instagram_html = "".join(f"<div class='card'><h4>Instagram Caption</h4><p>{p}</p></div>" for p in analysis["social_posts"]["instagram"])
-        transcript_html = f"<div class='card'><h4>Full Transcript</h4><p>{transcript}</p></div>"
-
-        def escape_attr(text):
-            return text.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-
-        # Plain text (not JSON-encoded!)
-        quotes_txt = escape_attr("\n\n".join(analysis["quotes"]))
-        linkedin_txt = escape_attr("\n\n".join(analysis["social_posts"]["linkedin"]))
-        instagram_txt = escape_attr("\n\n".join(analysis["social_posts"]["instagram"]))
-        summary_txt = escape_attr(analysis["summary"])
-
-
-
-        html = f"""
-        <html>
-        <head>
-            <title>Interview Analysis</title>
-            <style>
-                body {{
-                    font-family: Arial, sans-serif;
-                    margin: 2em;
-                    line-height: 1.6;
-                }}
-                h2 {{ color: #2c3e50; }}
-                .card {{
-                    border: 1px solid #ddd;
-                    border-radius: 8px;
-                    padding: 1em;
-                    margin: 1em 0;
-                    background: #f9f9f9;
-                }}
-                ul {{ padding-left: 1.5em; }}
-            </style>
-        </head>
-        <body>
-            <h1>🧠 GPT Interview Summary</h1>
-
-            <h2>📌 Compelling Quotes</h2>
-            <button onclick="downloadFromElement(this)" data-filename="quotes.txt" data-content="{quotes_txt.replace('"', '&quot;').replace('&', '&amp;')}">💾 Save Quotes</button>
-            <ul>{quotes_html}</ul>
-
-            <h2>📄 Summary</h2>
-            <button onclick="downloadFromElement(this)" data-filename="summary.txt" data-content="{summary_txt.replace('"', '&quot;').replace('&', '&amp;')}">💾 Save Summary</button>
-            <pre>{analysis["summary"]}</pre>
-
-            <h2>💼 LinkedIn Posts</h2>
-            <button onclick="downloadFromElement(this)" data-filename="linkedin_posts.txt" data-content="{linkedin_txt.replace('"', '&quot;').replace('&', '&amp;')}">💾 Save LinkedIn</button>
-            {linkedin_html}
-
-            <h2>📸 Instagram Captions</h2>
-            <button onclick="downloadFromElement(this)" data-filename="instagram_posts.txt" data-content="{instagram_txt.replace('"', '&quot;').replace('&', '&amp;')}">💾 Save Instagram</button>
-            {instagram_html}
-
-            <h2>📝 Full Transcript</h2>
-            {transcript_html}
-
-
-            <hr>
-            <p><a href="/upload-form">⬅️ Upload another file</a></p>
-
-            <script>
-                function downloadFromElement(el) {{
-                    const text = el.getAttribute("data-content");
-                    const filename = el.getAttribute("data-filename");
-                    const blob = new Blob([text], {{ type: 'text/plain' }});
-                    const a = document.createElement("a");
-                    a.href = URL.createObjectURL(blob);
-                    a.download = filename;
-                    a.click();
-                }}
-            </script>
-
-
-        </body>
-        </html>
-        """
-
-        return HTMLResponse(content=html)
+        return JSONResponse({
+            "summary": analysis["summary"],
+            "quotes": analysis["quotes"],
+            "social_posts": {
+                "linkedin": analysis["social_posts"]["linkedin"],
+                "instagram": analysis["social_posts"]["instagram"]
+            },
+            "transcript": transcript
+        })
 
     except Exception as e:
-        return HTMLResponse(f"<h3>Error: {str(e)}</h3>", status_code=500)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
     finally:
         os.remove(temp_video_path)
