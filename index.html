@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>VoicePress – AI Summary, Transcript & Social Content from Videos</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  
+  <!-- Toastify CSS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css" />
+
+  <style>
+      .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 20px auto;
+      max-width: 500px;  /* same as upload form */
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
+    }
+
+    .card h2 {
+      font-size: 1.25rem;
+      color: #2c3e50;
+      margin-bottom: 10px;
+    }
+
+    .card pre {
+      background-color: #f9f9f9;
+      padding: 12px;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      margin-bottom: 10px;
+      font-family: monospace;
+    }
+
+    .copy-btn {
+      background-color: #3498db;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      border-radius: 6px;
+      cursor: pointer;
+      float: right;
+      margin-top: 5px;
+      transition: background-color 0.3s ease;
+    }
+
+    .copy-btn:hover {
+      background-color: #2980b9;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f4f6f8;
+      color: #333;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+
+    h2 {
+      margin-top: 40px;
+      font-size: 2rem;
+      color: #2c3e50;
+      text-align: center;
+    }
+
+    .subtitle {
+      margin-top: -10px;
+      font-size: 1rem;
+      color: #555;
+      text-align: center;
+      max-width: 600px;
+      line-height: 1.5;
+    }
+
+    form {
+      background-color: #fff;
+      padding: 30px 40px;
+      margin-top: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      width: 100%;
+      max-width: 500px;
+      box-sizing: border-box;
+    }
+
+    .custom-file-input {
+      display: none;
+    }
+
+    .file-upload-wrapper {
+      position: relative;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+
+    .file-upload-label {
+      display: block;
+      background-color: #ecf0f1;
+      padding: 12px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+      text-align: center;
+      border: 2px dashed #3498db;
+      color: #3498db;
+      transition: background-color 0.3s ease;
+    }
+
+    .file-upload-label:hover {
+      background-color: #d6eaf8;
+    }
+
+    .file-name {
+      margin-top: 8px;
+      font-size: 0.9rem;
+      color: #2c3e50;
+      text-align: center;
+    }
+
+    p {
+      margin: 10px 0;
+      font-size: 0.95rem;
+    }
+
+    button {
+      background-color: #3498db;
+      color: #fff;
+      border: none;
+      padding: 12px 20px;
+      font-size: 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+      width: 100%;
+    }
+
+    button:hover:enabled {
+      background-color: #2980b9;
+    }
+
+    button:disabled {
+      background-color: #bdc3c7;
+      cursor: not-allowed;
+    }
+
+    #uploadProgress {
+      display: none;
+      height: 20px;
+      margin: 15px 0;
+      border-radius: 6px;
+      background-color: #ddd;
+    }
+
+    #uploadProgress::-webkit-progress-bar {
+      background-color: #eee;
+      border-radius: 6px;
+    }
+
+    #uploadProgress::-webkit-progress-value {
+      background-color: #3498db;
+      border-radius: 6px;
+    }
+
+    #spinner {
+      display: none;
+      text-align: center;
+      margin: 1em 0;
+    }
+
+    .loader {
+      border: 6px solid #f3f3f3;
+      border-top: 6px solid #3498db;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: auto;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    #statusLight {
+      margin-top: 10px;
+      font-style: italic;
+      text-align: center;
+      font-size: 0.95rem;
+    }
+
+    #output {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 0.95rem;
+      color: #555;
+      max-width: 90%;
+      word-wrap: break-word;
+    }
+
+    .feature-box {
+      max-width: 500px;
+      margin-top: 30px;
+      font-size: 0.95rem;
+      color: #444;
+    }
+
+    .feature-box h3 {
+      margin-bottom: 10px;
+    }
+
+    .feature-box ul {
+      padding-left: 20px;
+      line-height: 1.6;
+    }
+  </style>
+  </head>
+    <h2>🎙️ VoicePress – Turn Interviews into Content</h2>
+  <p class="subtitle">
+    Upload your interview videos and get an AI-generated summary, transcript, quotes, and social media posts for LinkedIn & Instagram.
+  </p>
+  <p id="statusLight">⏳ Checking system status...</p>
+
+  <form id="uploadForm" enctype="multipart/form-data">
+    <div class="file-upload-wrapper">
+      <label class="file-upload-label" for="videoFile">📁 Choose a video file</label>
+      <input type="file" id="videoFile" class="custom-file-input" accept="video/mp4" required />
+      <div class="file-name" id="fileName">No file chosen</div>
+    </div>
+
+    <p>File Size Limit: 2 GB</p>
+    <p id="uploadStatus"></p>
+    <progress id="uploadProgress" value="0" max="100"></progress>
+
+    <div id="spinner"><div class="loader"></div></div>
+
+    <button type="submit">Upload</button>
+  </form>
+
+  <div id="output"></div>
+
+  <div class="feature-box">
+    <h3>📋 What You'll Get</h3>
+    <ul>
+      <li><strong>📝 Transcript</strong> – Full conversation text</li>
+      <li><strong>📌 Summary</strong> – Key takeaways from the video</li>
+      <li><strong>💬 Quotes</strong> – Notable lines from the speaker(s)</li>
+      <li><strong>📱 Social Media Posts</strong> – Formatted for LinkedIn & Instagram</li>
+    </ul>
+  </div>
+
+  <!-- Toastify JS -->
+  <script src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+  <script src="upload.js"></script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+# Python virtual environments
+venv/
+backend/venv/
+
+# Bytecode and compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# VSCode and IDE settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Logs and output
+*.log
+
+# Environment variables
+.env
+.env.*
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# macOS metadata
+*.DS_Store
+
+# Python packaging artifacts
+build/
+dist/
+*.egg-info/
