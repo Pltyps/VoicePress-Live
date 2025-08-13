@@ -114,7 +114,7 @@ async def upload_mp4(file: UploadFile = File(...)):
         logger.info(f"📁 File saved to temp path: {temp_path}")
 
         logger.info("🧠 Loading Whisper model...")
-        model = whisper.load_model("base")
+        model = whisper.load_model("tiny")
 
         logger.info("🎙️ Transcribing audio...")
         result = model.transcribe(temp_path)

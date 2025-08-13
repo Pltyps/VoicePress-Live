@@ -82,8 +82,32 @@ document.addEventListener("DOMContentLoaded", () => {
       spinner.style.display = "none";
       progressBar.style.display = "none";
       submitButton.disabled = false;
-      console.error("❌ Upload failed due to a network error.");
-      status.textContent = "❌ Upload failed.";
+
+      const statusCode = xhr.status;
+      const isLikelyMemoryCrash =
+        statusCode === 502 || statusCode === 503 || statusCode === 0;
+
+      const message = isLikelyMemoryCrash
+        ? "🚨 Upload failed. Server may have crashed due to memory overload or restart."
+        : "❌ Upload failed due to a network error.";
+
+      console.error(message, `(XHR Status: ${statusCode})`);
+      status.textContent = message;
+      output.innerHTML = `<p style="color:red;">${message}</p>`;
+
+      // Optional: Send to backend or error tracking endpoint
+      /*
+  fetch(`${BACKEND_URL}/log-error`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type: "frontend-upload-error",
+      message,
+      statusCode,
+      time: new Date().toISOString()
+    })
+  }).catch(err => console.warn("Failed to log error:", err));
+  */
     };
 
     xhr.send(formData);
