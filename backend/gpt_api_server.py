@@ -41,12 +41,10 @@ job_running = False
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://pltyps.github.io"],
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept"],
+    allow_origins=["https://pltyps.github.io/VoicePress-Live/"],
     allow_credentials=True,
-    expose_headers=["Content-Type"],
-    max_age=86400,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.middleware("http")
