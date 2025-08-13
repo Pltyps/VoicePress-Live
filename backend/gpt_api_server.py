@@ -41,7 +41,7 @@ job_running = False
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://pltyps.github.io"],
+    allow_origins=["https://pltyps.github.io"],  # correct origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,6 +86,11 @@ def upload_form():
         </body>
     </html>
     """
+
+@app.options("/{full_path:path}")
+async def preflight_handler():
+    return Response(status_code=200)
+
 
 @app.options("/upload")
 async def upload_options():
