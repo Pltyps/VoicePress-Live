@@ -85,6 +85,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-App"],
+    max_age=86400,
 )
 
 @app.middleware("http")
@@ -205,6 +207,11 @@ def _filter_verbatim_quotes(transcript: str, quotes: list[str], max_quotes: int 
 def head_root():
     return Response(status_code=200)
 
+# Catch-all OPTIONS so preflight always succeeds when app is up
+@app.options("/{rest_of_path:path}")
+def options_cors(rest_of_path: str):
+    return Response(status_code=204)
+
 @app.get("/")
 def home():
     return {"message": "API is working"}
@@ -215,7 +222,10 @@ def health():
 
 @app.get("/status")
 def get_status():
-    return {"status": job_stage}
+    # Backward compatibility: return "processing" like your old UI expects,
+    # and also include the richer stage.
+    status = "processing" if job_stage != Stage.idle else "idle"
+    return {"status": status, "stage": job_stage}
 
 @app.get("/debug/tmp")
 def debug_tmp():

@@ -24,11 +24,9 @@ document.addEventListener("DOMContentLoaded", () => {
       progressBar.style.display = "none";
     } else if (opts.progress === "determinate") {
       progressBar.style.display = "block";
-      // determinate state -> must have value
       if (!progressBar.hasAttribute("value")) progressBar.value = 0;
     } else if (opts.progress === "indeterminate") {
       progressBar.style.display = "block";
-      // indeterminate state -> remove value attr
       progressBar.removeAttribute("value");
     }
     if (opts.disableButton !== undefined)
@@ -40,9 +38,18 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await fetch(`${BACKEND_URL}/status`, { cache: "no-store" });
       const data = await res.json();
-      if (data.status === "processing") {
-        statusLight.textContent =
-          "🔴 Processing… Generating transcript, summary, quotes, and social posts.";
+      // server returns {status: "idle"|"processing", stage: "idle|extracting|transcribing|summarizing"}
+      const stage =
+        data.stage || (data.status === "processing" ? "processing" : "idle");
+
+      if (stage !== "idle") {
+        const map = {
+          extracting: "🔴 Extracting audio…",
+          transcribing: "🔴 Transcribing…",
+          summarizing: "🔴 Summarizing & generating posts…",
+          processing: "🔴 Processing…",
+        };
+        statusLight.textContent = map[stage] || "🔴 Processing…";
         statusLight.style.color = "#e74c3c";
         submitButton.disabled = true;
       } else {
@@ -104,7 +111,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${BACKEND_URL}/upload`, true);
-    xhr.timeout = 1000 * 60 * 30; // 30 minutes (adjust as needed)
+    xhr.timeout = 1000 * 60 * 30; // 30 minutes
 
     xhr.onloadstart = () => {
       setStage("Uploading…", {
@@ -126,10 +133,10 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    // when the upload has finished sending bytes, but server is still working
+    // when the upload bytes are done but server keeps working
     xhr.upload.addEventListener("load", () => {
       setStage(
-        "Upload complete. Processing (extracting audio → transcribing → summarizing)…",
+        "Upload complete. Processing (extracting → transcribing → summarizing)…",
         {
           showSpinner: true,
           progress: "indeterminate",
@@ -142,14 +149,21 @@ document.addEventListener("DOMContentLoaded", () => {
     // network-level errors
     xhr.onerror = () => {
       stopProcessingPolling();
-      setStage("❌ Upload failed due to a network error.", {
+      const statusCode = xhr.status || 0;
+      const looksLikeEdge =
+        statusCode === 0 ||
+        statusCode === 502 ||
+        statusCode === 503 ||
+        statusCode === 504;
+      const msg = looksLikeEdge
+        ? "🚨 The server is restarting or temporarily unavailable. Please retry in a few seconds."
+        : "❌ Upload failed due to a network error.";
+      setStage(msg, {
         showSpinner: false,
         progress: "hide",
         disableButton: false,
       });
-      output.innerHTML = `<p style="color:red;">Network error (XHR status ${
-        xhr.status || 0
-      }).</p>`;
+      output.innerHTML = `<p style="color:red;">${msg}</p>`;
     };
 
     xhr.ontimeout = () => {
@@ -170,7 +184,6 @@ document.addEventListener("DOMContentLoaded", () => {
       stopProcessingPolling();
       submitButton.disabled = false;
 
-      // restore progress UI
       spinner.style.display = "none";
       progressBar.style.display = "none";
 
@@ -189,7 +202,6 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // friendly errors
       if (xhr.status === 200) {
         setStage("✅ Processing complete!", {
           showSpinner: false,
@@ -210,7 +222,6 @@ document.addEventListener("DOMContentLoaded", () => {
         output.innerHTML = `<p style="color:red;">${friendly}</p>`;
       }
 
-      // cleanup selection
       fileInput.value = "";
       fileNameDisplay.textContent = "No file chosen";
       startNormalPolling();
@@ -221,7 +232,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ---- background status light ----
   function initStatusLight() {
-    // start the normal slower poll; we’ll swap to faster during processing
     if (normalPoller) clearInterval(normalPoller);
     normalPoller = setInterval(pollStatusOnce, 5000);
     pollStatusOnce();
