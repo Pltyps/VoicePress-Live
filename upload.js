@@ -4,21 +4,89 @@ const BACKEND_URL = "https://voicepress-live-api.onrender.com";
 document.addEventListener("DOMContentLoaded", () => {
   const form = document.getElementById("uploadForm");
   const fileInput = document.getElementById("videoFile");
-  const status = document.getElementById("uploadStatus");
+  const statusEl = document.getElementById("uploadStatus");
   const spinner = document.getElementById("spinner");
   const progressBar = document.getElementById("uploadProgress");
   const output = document.getElementById("output");
   const fileNameDisplay = document.getElementById("fileName");
   const submitButton = form.querySelector("button");
+  const statusLight = document.getElementById("statusLight");
 
-  // Display selected file name
+  // ---- helpers ----
+  let processingPoller = null;
+  let normalPoller = null;
+
+  function setStage(message, opts = {}) {
+    statusEl.textContent = message;
+    if (opts.showSpinner !== undefined)
+      spinner.style.display = opts.showSpinner ? "block" : "none";
+    if (opts.progress === "hide") {
+      progressBar.style.display = "none";
+    } else if (opts.progress === "determinate") {
+      progressBar.style.display = "block";
+      // determinate state -> must have value
+      if (!progressBar.hasAttribute("value")) progressBar.value = 0;
+    } else if (opts.progress === "indeterminate") {
+      progressBar.style.display = "block";
+      // indeterminate state -> remove value attr
+      progressBar.removeAttribute("value");
+    }
+    if (opts.disableButton !== undefined)
+      submitButton.disabled = opts.disableButton;
+  }
+
+  // speed up status polling while a job is running
+  async function pollStatusOnce() {
+    try {
+      const res = await fetch(`${BACKEND_URL}/status`, { cache: "no-store" });
+      const data = await res.json();
+      if (data.status === "processing") {
+        statusLight.textContent =
+          "🔴 Processing… Generating transcript, summary, quotes, and social posts.";
+        statusLight.style.color = "#e74c3c";
+        submitButton.disabled = true;
+      } else {
+        statusLight.textContent =
+          "🟢 System is ready. You can upload a video file.";
+        statusLight.style.color = "#2ecc71";
+        submitButton.disabled = false;
+      }
+    } catch {
+      statusLight.textContent =
+        "⚠️ Unable to retrieve system status. Please refresh.";
+      statusLight.style.color = "#f39c12";
+    }
+  }
+
+  function startNormalPolling() {
+    stopProcessingPolling();
+    if (normalPoller) clearInterval(normalPoller);
+    normalPoller = setInterval(pollStatusOnce, 5000);
+    pollStatusOnce();
+  }
+
+  function startProcessingPolling() {
+    if (normalPoller) clearInterval(normalPoller);
+    if (processingPoller) clearInterval(processingPoller);
+    processingPoller = setInterval(pollStatusOnce, 1500);
+    pollStatusOnce();
+  }
+
+  function stopProcessingPolling() {
+    if (processingPoller) {
+      clearInterval(processingPoller);
+      processingPoller = null;
+    }
+  }
+
+  // show selected file name
   fileInput.addEventListener("change", () => {
     fileNameDisplay.textContent = fileInput.files.length
       ? fileInput.files[0].name
       : "No file chosen";
   });
 
-  // Upload handler
+  // ---- upload handler ----
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     const file = fileInput.files[0];
@@ -27,7 +95,8 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    console.log("📤 Upload started:", file.name);
+    // reset UI
+    output.innerHTML = "";
     submitButton.disabled = true;
 
     const formData = new FormData();
@@ -35,116 +104,133 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${BACKEND_URL}/upload`, true);
+    xhr.timeout = 1000 * 60 * 30; // 30 minutes (adjust as needed)
 
     xhr.onloadstart = () => {
-      spinner.style.display = "block";
-      progressBar.style.display = "block";
+      setStage("Uploading…", {
+        showSpinner: true,
+        progress: "determinate",
+        disableButton: true,
+      });
       progressBar.value = 0;
-      status.textContent = "Uploading...";
+      startProcessingPolling(); // begin tighter polling immediately
+      console.log("📤 Upload started:", file.name);
     };
 
+    // upload progress (deterministic)
     xhr.upload.addEventListener("progress", (e) => {
       if (e.lengthComputable) {
         const percent = (e.loaded / e.total) * 100;
-        console.log(`📶 Upload progress: ${percent.toFixed(1)}%`);
         progressBar.value = percent;
+        statusEl.textContent = `Uploading… ${percent.toFixed(1)}%`;
       }
     });
 
-    xhr.onload = () => {
-      spinner.style.display = "none";
-      progressBar.style.display = "none";
-      submitButton.disabled = false;
-
-      try {
-        const response = JSON.parse(xhr.responseText);
-
-        if (xhr.status === 200) {
-          console.log("✅ Upload successful:", response);
-          status.textContent = "✅ Upload complete!";
-          renderContent(response);
-        } else {
-          console.error("❌ Upload failed with status", xhr.status, response);
-          status.textContent = "❌ Upload failed.";
-          output.innerHTML = `<p style="color:red;">${response.error}</p>`;
+    // when the upload has finished sending bytes, but server is still working
+    xhr.upload.addEventListener("load", () => {
+      setStage(
+        "Upload complete. Processing (extracting audio → transcribing → summarizing)…",
+        {
+          showSpinner: true,
+          progress: "indeterminate",
+          disableButton: true,
         }
-      } catch (err) {
-        console.error("❌ Failed to parse JSON from server:", err);
-        status.textContent = "❌ Upload failed.";
-        output.innerHTML = `<p style="color:red;">Invalid server response</p>`;
-      }
+      );
+      console.log("📦 Upload finished; server is processing…");
+    });
 
-      fileInput.value = "";
-      fileNameDisplay.textContent = "No file chosen";
+    // network-level errors
+    xhr.onerror = () => {
+      stopProcessingPolling();
+      setStage("❌ Upload failed due to a network error.", {
+        showSpinner: false,
+        progress: "hide",
+        disableButton: false,
+      });
+      output.innerHTML = `<p style="color:red;">Network error (XHR status ${
+        xhr.status || 0
+      }).</p>`;
     };
 
-    xhr.onerror = () => {
-      spinner.style.display = "none";
-      progressBar.style.display = "none";
+    xhr.ontimeout = () => {
+      stopProcessingPolling();
+      setStage(
+        "⏰ Request timed out while processing. Please try again later.",
+        {
+          showSpinner: false,
+          progress: "hide",
+          disableButton: false,
+        }
+      );
+      output.innerHTML = `<p style="color:red;">The server took too long to respond.</p>`;
+    };
+
+    // final response
+    xhr.onload = () => {
+      stopProcessingPolling();
       submitButton.disabled = false;
 
-      const statusCode = xhr.status;
-      const isLikelyMemoryCrash =
-        statusCode === 502 || statusCode === 503 || statusCode === 0;
+      // restore progress UI
+      spinner.style.display = "none";
+      progressBar.style.display = "none";
 
-      const message = isLikelyMemoryCrash
-        ? "🚨 Upload failed. Server may have crashed due to memory overload or restart."
-        : "❌ Upload failed due to a network error.";
+      let response = {};
+      try {
+        response = JSON.parse(xhr.responseText || "{}");
+      } catch {
+        setStage("❌ Server returned invalid JSON.", {
+          showSpinner: false,
+          progress: "hide",
+        });
+        output.innerHTML = `<p style="color:red;">Invalid server response</p>`;
+        fileInput.value = "";
+        fileNameDisplay.textContent = "No file chosen";
+        startNormalPolling();
+        return;
+      }
 
-      console.error(message, `(XHR Status: ${statusCode})`);
-      status.textContent = message;
-      output.innerHTML = `<p style="color:red;">${message}</p>`;
+      // friendly errors
+      if (xhr.status === 200) {
+        setStage("✅ Processing complete!", {
+          showSpinner: false,
+          progress: "hide",
+        });
+        renderContent(response);
+      } else {
+        const friendly =
+          xhr.status === 429
+            ? "🚦 System is busy. Please wait for the current job to finish."
+            : xhr.status === 413
+            ? "📦 File too large for the server limits."
+            : xhr.status === 502 || xhr.status === 503 || xhr.status === 504
+            ? "🚨 The server restarted or ran out of memory during processing."
+            : response.error || "❌ Upload/processing failed.";
 
-      // Optional: Send to backend or error tracking endpoint
-      /*
-  fetch(`${BACKEND_URL}/log-error`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "frontend-upload-error",
-      message,
-      statusCode,
-      time: new Date().toISOString()
-    })
-  }).catch(err => console.warn("Failed to log error:", err));
-  */
+        setStage(friendly, { showSpinner: false, progress: "hide" });
+        output.innerHTML = `<p style="color:red;">${friendly}</p>`;
+      }
+
+      // cleanup selection
+      fileInput.value = "";
+      fileNameDisplay.textContent = "No file chosen";
+      startNormalPolling();
     };
 
     xhr.send(formData);
   });
 
-  // Status polling
-  async function pollStatus() {
-    const light = document.getElementById("statusLight");
-
-    try {
-      const res = await fetch(`${BACKEND_URL}/status`);
-      const data = await res.json();
-      console.log("📡 Polled status:", data.status);
-
-      if (data.status === "processing") {
-        light.textContent =
-          "🔴 Processing... Generating transcript, summary, quotes, and social posts.";
-        light.style.color = "#e74c3c";
-        submitButton.disabled = true;
-      } else {
-        light.textContent = "🟢 System is ready. You can upload a video file.";
-        light.style.color = "#2ecc71";
-        submitButton.disabled = false;
-      }
-    } catch (err) {
-      console.error("⚠️ Failed to poll system status:", err);
-      light.textContent =
-        "⚠️ Unable to retrieve system status. Please refresh.";
-      light.style.color = "#f39c12";
-    }
+  // ---- background status light ----
+  function initStatusLight() {
+    // start the normal slower poll; we’ll swap to faster during processing
+    if (normalPoller) clearInterval(normalPoller);
+    normalPoller = setInterval(pollStatusOnce, 5000);
+    pollStatusOnce();
   }
 
-  setInterval(pollStatus, 5000);
-  pollStatus();
+  initStatusLight();
 });
 
-// Render GPT response content
+// ---- render GPT response content (unchanged) ----
 function renderContent(data) {
   const output = document.getElementById("output");
 
@@ -161,26 +247,32 @@ function renderContent(data) {
     `;
   }
 
-  const quotes = data.quotes.join("\n\n");
-  const linkedin = data.social_posts.linkedin.join("\n\n");
-  const instagram = data.social_posts.instagram.join("\n\n");
+  const quotes = (data.quotes || []).join("\n\n");
+  const linkedin = (data.social_posts?.linkedin || []).join("\n\n");
+  const instagram = (data.social_posts?.instagram || []).join("\n\n");
 
   output.innerHTML = `
     <h1>🧠 GPT Interview Summary</h1>
     ${createSection("📌 Compelling Quotes", quotes, quotes)}
-    ${createSection("📄 Summary", data.summary, data.summary)}
+    ${createSection("📄 Summary", data.summary || "", data.summary || "")}
     ${createSection("💼 LinkedIn Posts", linkedin, linkedin)}
     ${createSection("📸 Instagram Captions", instagram, instagram)}
-    ${createSection("📝 Full Transcript", data.transcript, data.transcript)}
+    ${createSection(
+      "📝 Full Transcript",
+      data.transcript || "",
+      data.transcript || ""
+    )}
   `;
 }
 
-// Escape HTML to prevent XSS
-function escapeHtml(str) {
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// ---- utils ----
+function escapeHtml(str = "") {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
-// Copy to clipboard with Toastify
 function copyToClipboard(text) {
   navigator.clipboard
     .writeText(text)

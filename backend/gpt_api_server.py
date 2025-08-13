@@ -1,10 +1,12 @@
-# backend/gpt_api_server.py
-
 import os
 import sys
 import json
 import tempfile
 import logging
+import uuid
+import shutil
+import subprocess
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +16,6 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
-import whisper
 import openai
 
 # ---------- Logging ----------
@@ -25,7 +26,6 @@ logging.basicConfig(
 logger = logging.getLogger("voicepress-api")
 
 def _mem_kb() -> Optional[int]:
-    # Best-effort memory reporting for Linux (Render)
     try:
         import resource  # type: ignore
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -36,6 +36,16 @@ def log_memory(tag: str):
     kb = _mem_kb()
     if kb is not None:
         logger.info(f"🧠 {tag} | ru_maxrss={kb} KB")
+
+def log_tmp_disk(tag: str = "boot"):
+    try:
+        total, used, free = shutil.disk_usage("/tmp")
+        logger.info(
+            f"💽 /tmp ({tag}) -> total={total/1_073_741_824:.2f} GiB, "
+            f"used={used/1_073_741_824:.2f} GiB, free={free/1_073_741_824:.2f} GiB"
+        )
+    except Exception:
+        logger.info("💽 /tmp capacity check failed")
 
 # ---------- Env / OpenAI ----------
 try:
@@ -53,15 +63,7 @@ except Exception:
     sys.exit(1)
 
 logger.info("👋 GPT API server starting...")
-
-# ---------- Whisper preload ----------
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "tiny")  # tiny/base/small…
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en")  # set to 'en' for speed if applicable
-
-logger.info(f"🧠 Preloading Whisper model ({WHISPER_MODEL})...")
-model = whisper.load_model(WHISPER_MODEL)
-logger.info("✅ Whisper model loaded and ready")
-log_memory("after_model_load")
+log_tmp_disk("startup")
 
 # ---------- FastAPI ----------
 app = FastAPI()
@@ -73,7 +75,7 @@ app.add_middleware(
     allow_origins=[
         "https://pltyps.github.io",
     ],
-    allow_origin_regex=r"https://.*\.github\.io$",   # covers org/user pages if you switch
+    allow_origin_regex=r"https://.*\.github\.io$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -96,39 +98,136 @@ class FrontendError(BaseModel):
     time: Optional[str] = None
     extra: Optional[dict] = None
 
+# ---------- Helpers: streaming MP4 -> audio (server keeps RAM tiny) ----------
+AUDIO_CODEC = os.getenv("AUDIO_CODEC", "flac")   # "flac" (lossless, smaller than WAV) or "aac"
+AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "96k")  # only used if aac
+AUDIO_RATE = os.getenv("AUDIO_RATE", "16000")    # 16 kHz for Whisper
+AUDIO_MONO = "1"
+
+def _ffmpeg_cmd(out_path: str):
+    # ffmpeg will read MP4 from stdin (pipe:0) and write audio only to out_path
+    if AUDIO_CODEC.lower() == "aac":
+        return [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-vn", "-ac", AUDIO_MONO, "-ar", AUDIO_RATE,
+            "-c:a", "aac", "-b:a", AUDIO_BITRATE,
+            out_path,
+        ]
+    # default: FLAC (lossless)
+    return [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", "pipe:0",
+        "-vn", "-ac", AUDIO_MONO, "-ar", AUDIO_RATE,
+        "-c:a", "flac",
+        out_path,
+    ]
+
+async def stream_mp4_to_audio(upload: UploadFile) -> str:
+    """
+    Streams the incoming MP4 bytes directly into ffmpeg via stdin.
+    Only an audio file is written to /tmp. Memory stays low.
+    Returns the audio temp file path.
+    """
+    suffix = ".m4a" if AUDIO_CODEC.lower() == "aac" else ".flac"
+    out_path = f"/tmp/audio-{uuid.uuid4().hex}{suffix}"
+
+    proc = subprocess.Popen(_ffmpeg_cmd(out_path), stdin=subprocess.PIPE)
+    try:
+        while True:
+            chunk = await upload.read(1024 * 1024)  # 1 MB chunks
+            if not chunk:
+                break
+            proc.stdin.write(chunk)
+        proc.stdin.close()
+        ret = proc.wait()
+        if ret != 0 or not os.path.exists(out_path):
+            raise RuntimeError(f"ffmpeg failed with code {ret}")
+        return out_path
+    except Exception:
+        proc.kill()
+        raise
+
+# ---------- Transcription with OpenAI Whisper API ----------
+WHISPER_API_MODEL = os.getenv("WHISPER_API_MODEL", "whisper-1")
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en")  # optional hint
+
+def transcribe_with_openai(audio_path: str) -> str:
+    try:
+        with open(audio_path, "rb") as f:
+            try:
+                resp = openai.Audio.transcriptions.create(
+                    model=WHISPER_API_MODEL,
+                    file=f,
+                    language=WHISPER_LANGUAGE
+                )
+                text = getattr(resp, "text", None) or resp.get("text", "")
+                return text.strip()
+            except Exception:
+                f.seek(0)
+                resp = openai.Audio.transcribe(
+                    WHISPER_API_MODEL, f, language=WHISPER_LANGUAGE
+                )
+                text = resp.get("text", "")
+                return text.strip()
+    except Exception as e:
+        logger.exception("💥 OpenAI Whisper transcription failed")
+        raise RuntimeError(str(e))
+
+# ---------- Verbatim quotes helpers ----------
+def _normalize_spaces(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
+
+def _filter_verbatim_quotes(transcript: str, quotes: list[str], max_quotes: int = 8) -> list[str]:
+    t_norm = _normalize_spaces(transcript).lower()
+    kept = []
+    seen = set()
+    for q in quotes or []:
+        q_clean = (q or "").strip()
+        if not q_clean:
+            continue
+        q_norm = _normalize_spaces(q_clean).lower()
+        if q_norm and q_norm in t_norm:
+            if q_norm not in seen:
+                kept.append(q_clean)
+                seen.add(q_norm)
+        if len(kept) >= max_quotes:
+            break
+    return kept
+
 # ---------- Routes ----------
 @app.head("/")
 def head_root():
-    # Render sometimes probes with HEAD; avoid 405
     return Response(status_code=200)
 
 @app.get("/")
 def home():
-    logger.info("✅ GET / - API health check")
     return {"message": "API is working"}
 
 @app.get("/health")
 def health():
-    logger.info("✅ GET /health - Health check OK")
     return {"status": "ok"}
 
 @app.get("/status")
 def get_status():
     status = "processing" if job_running else "idle"
-    logger.info(f"📡 GET /status - System is {status}")
     return {"status": status}
+
+@app.get("/debug/tmp")
+def debug_tmp():
+    total, used, free = shutil.disk_usage("/tmp")
+    return {
+        "tmp_total_gib": round(total/1_073_741_824, 3),
+        "tmp_used_gib": round(used/1_073_741_824, 3),
+        "tmp_free_gib": round(free/1_073_741_824, 3),
+    }
 
 @app.post("/log-error")
 async def log_error(err: FrontendError):
-    # Optional sink for frontend to report issues (e.g., 502/503)
-    logger.warning(f"🟠 Frontend error: {err.type} | {err.statusCode} | {err.message}")
-    if err.extra:
-        logger.warning(f"🟠 Extra: {json.dumps(err.extra)[:500]}")
     return {"ok": True}
 
 @app.get("/upload-form", response_class=HTMLResponse)
 def upload_form():
-    logger.info("🧾 GET /upload-form - Serving HTML upload form")
     return """
     <html>
       <head><title>Upload MP4 Interview</title></head>
@@ -145,46 +244,20 @@ def upload_form():
 @app.post("/upload")
 async def upload_mp4(file: UploadFile = File(...)):
     global job_running
-    logger.info(f"📥 POST /upload - Received file: {file.filename}")
-
     if not file.filename.lower().endswith(".mp4"):
-        logger.warning("❌ Rejected: File is not .mp4")
         return JSONResponse({"error": "Only .mp4 files are supported."}, status_code=400)
 
-    temp_path = None
+    audio_path = None
     try:
+        if job_running:
+            return JSONResponse({"error": "System is currently busy. Please wait."}, status_code=429)
         job_running = True
 
-        # Stream to temp file (avoids big in-memory read)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
-            temp_path = temp_video.name
-            while True:
-                chunk = await file.read(1024 * 1024)  # 1MB
-                if not chunk:
-                    break
-                temp_video.write(chunk)
-
-        logger.info(f"📁 File saved to temp path: {temp_path}")
-        log_memory("after_save")
-
-        # Transcribe
-        logger.info(f"🎙️ Transcribing audio with Whisper ({WHISPER_MODEL})...")
-        result = model.transcribe(
-            temp_path,
-            language=WHISPER_LANGUAGE if WHISPER_LANGUAGE else None,
-            fp16=False  # CPU on Render
-        )
-        transcript = result.get("text", "").strip()
-        logger.info("📝 Transcription complete")
-
-        # Analyze with GPT
-        logger.info("🤖 Sending transcript to GPT...")
+        audio_path = await stream_mp4_to_audio(file)
+        transcript = transcribe_with_openai(audio_path)
         analysis = await analyze_with_transcript(transcript)
-
         if "error" in analysis:
             return JSONResponse({"error": analysis["error"]}, status_code=500)
-
-        logger.info("✅ Upload and analysis successful")
         return JSONResponse({
             "summary": analysis.get("summary", ""),
             "quotes": analysis.get("quotes", []),
@@ -194,110 +267,56 @@ async def upload_mp4(file: UploadFile = File(...)):
             },
             "transcript": transcript
         })
-
     except Exception as e:
         logger.exception("💥 Error during /upload processing")
         return JSONResponse({"error": str(e)}, status_code=500)
-
     finally:
         job_running = False
-        if temp_path:
+        if audio_path and os.path.exists(audio_path):
             try:
-                os.remove(temp_path)
-                logger.info(f"🧹 Temp file deleted: {temp_path}")
-            except Exception as cleanup_err:
-                logger.warning(f"⚠️ Failed to delete temp file: {cleanup_err}")
-
-@app.post("/upload-api")
-async def upload_mp4_json(file: UploadFile = File(...)):
-    """
-    JSON-only variant; reuses the same preloaded Whisper model.
-    """
-    global job_running
-    logger.info(f"📥 POST /upload-api - Received: {file.filename}")
-
-    if job_running:
-        logger.warning("🚫 System busy, rejecting new upload")
-        return JSONResponse({"message": "System is currently busy. Please wait."}, status_code=429)
-
-    if not file.filename.lower().endswith(".mp4"):
-        logger.warning("❌ Rejected non-MP4 file")
-        return JSONResponse({"message": "Only .mp4 files are supported."}, status_code=400)
-
-    temp_path = None
-    try:
-        job_running = True
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
-            temp_path = temp_video.name
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                temp_video.write(chunk)
-
-        logger.info("📥 File stored temporarily")
-        log_memory("after_save_json")
-
-        result = model.transcribe(temp_path, language=WHISPER_LANGUAGE if WHISPER_LANGUAGE else None, fp16=False)
-        transcript = result.get("text", "").strip()
-
-        _ = await analyze_with_transcript(transcript)
-
-        logger.info("✅ JSON upload and analysis complete")
-        return JSONResponse({"message": f"{file.filename} uploaded and processed."})
-
-    except Exception as e:
-        logger.exception("💥 Error during /upload-api processing")
-        return JSONResponse({"message": f"Error: {str(e)}"}, status_code=500)
-
-    finally:
-        job_running = False
-        if temp_path:
-            try:
-                os.remove(temp_path)
-                logger.info(f"🧹 Cleaned up temp file: {temp_path}")
-            except Exception as cleanup_err:
-                logger.warning(f"⚠️ Failed to delete temp file: {cleanup_err}")
-
-@app.post("/analyze")
-async def analyze_transcript(req: TranscriptRequest):
-    logger.info("📤 POST /analyze - Manual transcript submitted")
-    return await analyze_with_transcript(req.transcript)
+                os.remove(audio_path)
+            except Exception:
+                pass
 
 # ---------- GPT helper ----------
 async def analyze_with_transcript(transcript: str):
-    logger.info("🧠 Calling GPT with transcript content...")
     system_message = (
-        "You are a content assistant. Given an interview transcript, produce JSON with keys: "
-        "`summary` (<= 8 sentences), `quotes` (array of punchy quotes), and `social_posts` with "
-        "subkeys `linkedin` (2 short posts) and `instagram` (2 captions). Respond ONLY with JSON."
+        "You are a careful content assistant. Given a human interview transcript, return STRICT JSON with keys:\n"
+        "  - summary: <= 8 sentences\n"
+        "  - quotes: array of compelling DIRECT QUOTES that appear VERBATIM in the transcript\n"
+        "  - social_posts: { linkedin: [2 short posts], instagram: [2 captions] }\n\n"
+        "Rules:\n"
+        "1) All items in 'quotes' MUST be EXACT substrings from the transcript (verbatim). Do not paraphrase.\n"
+        "2) If you cannot find verbatim quotes, return an empty quotes array.\n"
+        "3) Respond ONLY with JSON. No commentary.\n"
     )
-
     try:
-        # openai==0.28.0 (as in requirements) uses ChatCompletion
         response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": transcript or "(empty transcript)"}
             ],
-            temperature=0.7
+            temperature=0.2
         )
         reply = response.choices[0].message["content"]
-        logger.info("✅ GPT returned a response")
-        return json.loads(reply)
-
+        data = json.loads(reply)
+        if isinstance(data, dict):
+            raw_quotes = data.get("quotes", [])
+            data["quotes"] = _filter_verbatim_quotes(transcript, raw_quotes, max_quotes=8)
+            data.setdefault("summary", "")
+            sp = data.get("social_posts") or {}
+            sp.setdefault("linkedin", [])
+            sp.setdefault("instagram", [])
+            data["social_posts"] = sp
+        return data
     except json.JSONDecodeError:
-        logger.exception("💥 GPT returned malformed JSON")
-        return {"error": "GPT returned invalid JSON. Check system prompt or model output parsing."}
-
+        return {"error": "GPT returned invalid JSON."}
     except Exception as e:
-        logger.exception("💥 Error calling OpenAI GPT")
         return {"error": str(e)}
 
 # ---------- Local entry ----------
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"🚀 Starting Uvicorn on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
