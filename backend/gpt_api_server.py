@@ -41,11 +41,12 @@ job_running = False
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://pltyps.github.io/VoicePress-Live/"],
+    allow_origins=["https://pltyps.github.io"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.middleware("http")
 async def add_marker(request: Request, call_next):
