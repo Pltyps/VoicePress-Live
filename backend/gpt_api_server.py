@@ -1,10 +1,9 @@
 import os
 import sys
 import json
-import time
-import shutil
 import tempfile
 import logging
+import resource
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Request
@@ -19,9 +18,13 @@ from fastapi.middleware.cors import CORSMiddleware
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("voicepress-api")
 
+def log_memory_usage(label=""):
+    mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    logger.info(f"🧠 {label} | ru_maxrss={mem} KB")
+
 # --- Load environment variables ---
 try:
-    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    base_path = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
     dotenv_path = base_path / ".env"
     load_dotenv(dotenv_path=dotenv_path)
     openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -30,26 +33,17 @@ try:
         raise RuntimeError("❌ OPENAI_API_KEY is missing from environment")
 
     logger.info("🔑 OPENAI_API_KEY loaded successfully")
-except Exception:
+except Exception as e:
     logger.critical("💥 Failed to load .env or API key", exc_info=True)
     sys.exit(1)
 
 logger.info("👋 GPT API server starting...")
 
-# --- Memory helper (no extra deps) ---
-def log_mem(tag: str):
-    try:
-        import resource  # available on Linux
-        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        logger.info(f"🧠 {tag} | ru_maxrss={rss_kb} KB")
-    except Exception:
-        pass
-
-# Load Whisper model globally at startup
+# --- Preload Whisper model ---
 logger.info("🧠 Preloading Whisper model (tiny)...")
 model = whisper.load_model("tiny")
 logger.info("✅ Whisper model loaded and ready")
-log_mem("after_model_load")
+log_memory_usage("after_model_load")
 
 # --- Init FastAPI app ---
 app = FastAPI()
@@ -58,7 +52,7 @@ job_running = False
 # --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://pltyps.github.io"],  # your GitHub Pages origin
+    allow_origins=["https://pltyps.github.io"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -103,14 +97,8 @@ def upload_form():
     </html>
     """
 
-# Optional explicit preflight (CORSMiddleware would handle this anyway)
 @app.options("/{full_path:path}")
 async def preflight_handler():
-    return Response(status_code=200)
-
-@app.options("/upload")
-async def upload_options():
-    logger.info("⚙️ OPTIONS /upload - Preflight request")
     return Response(status_code=200)
 
 @app.post("/upload")
@@ -122,45 +110,34 @@ async def upload_mp4(file: UploadFile = File(...)):
         logger.warning("❌ Rejected: File is not .mp4")
         return JSONResponse({"error": "Only .mp4 files are supported."}, status_code=400)
 
-    temp_path = None
-    start_total = time.time()
+    job_running = True
     try:
-        # Stream to disk to avoid loading entire file into RAM
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+            contents = await file.read()
+            temp_video.write(contents)
             temp_path = temp_video.name
-            # 1MB chunks
-            shutil.copyfileobj(file.file, temp_video, length=1024 * 1024)
 
         logger.info(f"📁 File saved to temp path: {temp_path}")
-        log_mem("after_save")
+        log_memory_usage("after_save")
 
-        # Mark processing so /status shows correctly
-        job_running = True
-
-        # Transcribe
-        t0 = time.time()
         logger.info("🎙️ Transcribing audio with Whisper (tiny)...")
         result = model.transcribe(temp_path)
-        transcript = result.get("text", "")
-        logger.info(f"📝 Transcription complete in {time.time() - t0:.2f}s")
-        log_mem("after_transcribe")
+        transcript = result["text"]
+        logger.info("📝 Transcription complete")
+        log_memory_usage("after_transcribe")
 
-        # Analyze with GPT
-        t1 = time.time()
         logger.info("🤖 Sending transcript to GPT...")
         analysis = await analyze_with_transcript(transcript)
-        logger.info(f"✅ GPT analysis complete in {time.time() - t1:.2f}s")
-        log_mem("after_gpt")
 
-        logger.info(f"✅ Upload+analysis successful in {time.time() - start_total:.2f}s")
+        logger.info("✅ Upload and analysis successful")
         return JSONResponse({
             "summary": analysis.get("summary"),
             "quotes": analysis.get("quotes"),
             "social_posts": {
                 "linkedin": analysis.get("social_posts", {}).get("linkedin", []),
-                "instagram": analysis.get("social_posts", {}).get("instagram", []),
+                "instagram": analysis.get("social_posts", {}).get("instagram", [])
             },
-            "transcript": transcript,
+            "transcript": transcript
         })
 
     except Exception as e:
@@ -170,51 +147,8 @@ async def upload_mp4(file: UploadFile = File(...)):
     finally:
         job_running = False
         try:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
-                logger.info(f"🧹 Temp file deleted: {temp_path}")
-        except Exception as cleanup_err:
-            logger.warning(f"⚠️ Failed to delete temp file: {cleanup_err}")
-
-@app.post("/upload-api")
-async def upload_mp4_json(file: UploadFile = File(...)):
-    """Alt endpoint (JSON-only message). Reuses the global Whisper model."""
-    global job_running
-    logger.info(f"📥 POST /upload-api - Received: {file.filename}")
-
-    if job_running:
-        logger.warning("🚫 System busy, rejecting new upload")
-        return JSONResponse({"message": "System is currently busy. Please wait."}, status_code=429)
-
-    if not file.filename.lower().endswith(".mp4"):
-        logger.warning("❌ Rejected non-MP4 file")
-        return JSONResponse({"message": "Only .mp4 files are supported."}, status_code=400)
-
-    temp_path = None
-    try:
-        job_running = True
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
-            temp_path = temp_video.name
-            shutil.copyfileobj(file.file, temp_video, length=1024 * 1024)
-
-        logger.info("📥 File stored temporarily (streamed)")
-        result = model.transcribe(temp_path)
-        transcript = result.get("text", "")
-        _ = await analyze_with_transcript(transcript)
-
-        logger.info("✅ JSON upload and analysis complete")
-        return JSONResponse({"message": f"{file.filename} uploaded and processed."})
-
-    except Exception as e:
-        logger.exception("💥 Error during /upload-api processing")
-        return JSONResponse({"message": f"Error: {str(e)}"}, status_code=500)
-
-    finally:
-        job_running = False
-        try:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
-                logger.info(f"🧹 Cleaned up temp file: {temp_path}")
+            os.remove(temp_path)
+            logger.info(f"🧹 Temp file deleted: {temp_path}")
         except Exception as cleanup_err:
             logger.warning(f"⚠️ Failed to delete temp file: {cleanup_err}")
 
@@ -229,11 +163,7 @@ async def analyze_transcript(req: TranscriptRequest):
 async def analyze_with_transcript(transcript: str):
     logger.info("🧠 Calling GPT with transcript content...")
     system_message = (
-        "You are an assistant that returns strictly JSON with keys "
-        '["summary","quotes","social_posts"]. '
-        '"quotes" is a list of short quotes. '
-        '"social_posts" contains {"linkedin": [...], "instagram": [...]}. '
-        "No extra text outside JSON."
+        "You are an AI assistant. Summarize, extract notable quotes, and create social media posts from the following transcript."
     )
 
     try:
@@ -241,9 +171,8 @@ async def analyze_with_transcript(transcript: str):
             model="gpt-4",
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": transcript},
-            ],
-            temperature=0.2,
+                {"role": "user", "content": transcript}
+            ]
         )
         reply = response.choices[0].message.content
         logger.info("✅ GPT returned a response")
